@@ -1,0 +1,267 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { allTools } from "../dist/server.js";
+import { connectClient, startServer, textOf } from "./helpers.mjs";
+
+const EXPECTED_METHODS = {
+  about: ["get"],
+  accessproposals: ["get", "list", "resolve"],
+  approvals: ["approve", "cancel", "comment", "decline", "get", "list", "reassign", "start"],
+  apps: ["get", "list"],
+  changes: ["getStartPageToken", "list", "watch"],
+  channels: ["stop"],
+  comments: ["create", "delete", "get", "list", "update"],
+  drives: ["create", "delete", "get", "hide", "list", "unhide", "update"],
+  files: [
+    "copy", "create", "delete", "download", "emptyTrash", "export", "generateCseToken",
+    "generateIds", "get", "list", "listLabels", "modifyLabels", "update", "watch",
+  ],
+  operations: ["get"],
+  permissions: ["create", "delete", "get", "list", "update"],
+  replies: ["create", "delete", "get", "list", "update"],
+  revisions: ["delete", "get", "list", "update"],
+  teamdrives: ["create", "delete", "get", "list", "update"],
+};
+
+test("tool names are unique", () => {
+  const names = allTools.map((t) => t.name);
+  assert.equal(new Set(names).size, names.length);
+});
+
+test("every Drive v3 method is reachable through at least one tool", async () => {
+  const ctx = await startServer();
+  try {
+    const client = await connectClient(ctx.url);
+    const { tools } = await client.listTools();
+    assert.equal(tools.length, allTools.length);
+
+    // Drive a call through every tool with placeholder arguments, then check which
+    // googleapis methods were exercised.
+    const placeholder = (schema) => {
+      const props = schema.properties ?? {};
+      const required = schema.required ?? [];
+      const args = {};
+      for (const key of required) args[key] = sample(props[key]);
+      return args;
+    };
+
+    for (const t of tools) {
+      await client.callTool({ name: t.name, arguments: placeholder(t.inputSchema) });
+    }
+    await client.close();
+
+    const seen = new Set(ctx.drive.calls.map((c) => c.path));
+    const missing = [];
+    for (const [resource, methods] of Object.entries(EXPECTED_METHODS)) {
+      for (const m of methods) if (!seen.has(`${resource}.${m}`)) missing.push(`${resource}.${m}`);
+    }
+    assert.deepEqual(missing, [], `uncovered Drive methods: ${missing.join(", ")}`);
+  } finally {
+    await ctx.close();
+  }
+});
+
+function sample(prop) {
+  if (!prop) return "x";
+  if (prop.enum) return prop.enum[0];
+  switch (prop.type) {
+    case "number":
+    case "integer":
+      return 1;
+    case "boolean":
+      return true;
+    case "array":
+      return [sample(prop.items)];
+    case "object": {
+      const out = {};
+      for (const key of prop.required ?? []) out[key] = sample(prop.properties?.[key]);
+      return out;
+    }
+    default:
+      return "x";
+  }
+}
+
+test("files.list forwards the query and shared-drive defaults", async () => {
+  const ctx = await startServer({}, {
+    "files.list": { files: [{ id: "abc", name: "Report.pdf" }], nextPageToken: "next" },
+  });
+  try {
+    const client = await connectClient(ctx.url);
+    const result = await client.callTool({
+      name: "drive_files_list",
+      arguments: { q: "name contains 'Report'", pageSize: 5, fields: "files(id,name)" },
+    });
+    assert.equal(result.isError, undefined);
+    assert.match(textOf(result), /Report\.pdf/);
+
+    const call = ctx.drive.calls.find((c) => c.path === "files.list");
+    assert.equal(call.params.q, "name contains 'Report'");
+    assert.equal(call.params.pageSize, 5);
+    assert.equal(call.params.supportsAllDrives, true);
+    assert.equal(call.params.includeItemsFromAllDrives, true);
+    await client.close();
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("files.create uploads text content and infers the body", async () => {
+  const ctx = await startServer({}, { "files.create": { id: "new-id", name: "notes.txt" } });
+  try {
+    const client = await connectClient(ctx.url);
+    await client.callTool({
+      name: "drive_files_create",
+      arguments: {
+        metadata: { name: "notes.txt", parents: ["root"], mimeType: "text/plain" },
+        media: { text: "hello world" },
+      },
+    });
+    const call = ctx.drive.calls.find((c) => c.path === "files.create");
+    assert.deepEqual(call.params.requestBody, { name: "notes.txt", mimeType: "text/plain", parents: ["root"] });
+    assert.equal(call.params.media.mimeType, "text/plain");
+    const chunks = [];
+    for await (const chunk of call.params.media.body) chunks.push(chunk);
+    assert.equal(Buffer.concat(chunks).toString("utf8"), "hello world");
+    await client.close();
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("additionalMetadata is merged into the file body", async () => {
+  const ctx = await startServer();
+  try {
+    const client = await connectClient(ctx.url);
+    await client.callTool({
+      name: "drive_files_update",
+      arguments: { fileId: "f1", metadata: { name: "a", additionalMetadata: { labelInfo: { labels: [] } } } },
+    });
+    const call = ctx.drive.calls.find((c) => c.path === "files.update");
+    assert.deepEqual(call.params.requestBody, { labelInfo: { labels: [] }, name: "a" });
+    await client.close();
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("export returns text content for textual MIME types", async () => {
+  const ctx = await startServer({}, { "files.export": Buffer.from("col1,col2\n1,2\n") });
+  try {
+    const client = await connectClient(ctx.url);
+    const result = await client.callTool({
+      name: "drive_files_export",
+      arguments: { fileId: "doc1", mimeType: "text/csv" },
+    });
+    assert.equal(textOf(result), "col1,col2\n1,2\n");
+    await client.close();
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("binary downloads come back as a base64 resource", async () => {
+  const bytes = Buffer.from([0x00, 0x01, 0x02, 0xff]);
+  const ctx = await startServer({}, {
+    "files.get": (params) => (params.alt === "media" ? bytes : { name: "blob.bin", mimeType: "application/octet-stream" }),
+  });
+  try {
+    const client = await connectClient(ctx.url);
+    const result = await client.callTool({ name: "drive_files_get_content", arguments: { fileId: "f1" } });
+    const part = result.content[0];
+    assert.equal(part.type, "resource");
+    assert.equal(part.resource.mimeType, "application/octet-stream");
+    assert.equal(Buffer.from(part.resource.blob, "base64").toString("hex"), bytes.toString("hex"));
+    await client.close();
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("oversized inline downloads are refused with guidance", async () => {
+  const ctx = await startServer({ DRIVE_MAX_INLINE_BYTES: "8" }, {
+    "files.get": (params) => (params.alt === "media" ? Buffer.alloc(64) : { mimeType: "application/octet-stream" }),
+  });
+  try {
+    const client = await connectClient(ctx.url);
+    const result = await client.callTool({ name: "drive_files_get_content", arguments: { fileId: "f1" } });
+    assert.equal(result.isError, true);
+    assert.match(textOf(result), /inline limit/);
+    await client.close();
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("local file paths are refused unless explicitly enabled", async () => {
+  const ctx = await startServer();
+  try {
+    const client = await connectClient(ctx.url);
+    const result = await client.callTool({
+      name: "drive_files_create",
+      arguments: { metadata: { name: "x" }, media: { localPath: "/etc/hostname" } },
+    });
+    assert.equal(result.isError, true);
+    assert.match(textOf(result), /DRIVE_ALLOW_LOCAL_FILES/);
+    await client.close();
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("read-only mode hides every mutating tool", async () => {
+  const ctx = await startServer({ DRIVE_READ_ONLY: "1" });
+  try {
+    const client = await connectClient(ctx.url);
+    const { tools } = await client.listTools();
+    const names = tools.map((t) => t.name);
+    assert.ok(names.includes("drive_files_list"));
+    assert.ok(!names.includes("drive_files_delete"));
+    assert.ok(!names.includes("drive_permissions_create"));
+    assert.ok(tools.every((t) => t.annotations.readOnlyHint === true));
+    await client.close();
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("Google API errors are surfaced as tool errors, not transport failures", async () => {
+  const ctx = await startServer({}, {
+    "files.get": () => {
+      const err = new Error("Request failed with status code 404");
+      err.response = { status: 404, data: { error: { message: "File not found: nope.", status: "NOT_FOUND" } } };
+      throw err;
+    },
+  });
+  try {
+    const client = await connectClient(ctx.url);
+    const result = await client.callTool({ name: "drive_files_get", arguments: { fileId: "nope" } });
+    assert.equal(result.isError, true);
+    assert.match(textOf(result), /404: File not found: nope\. \(NOT_FOUND\)/);
+    await client.close();
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("resources expose Drive files and export Google Docs as markdown", async () => {
+  const ctx = await startServer({}, {
+    "files.list": { files: [{ id: "f1", name: "Doc", mimeType: "application/vnd.google-apps.document" }] },
+    "files.get": { name: "Doc", mimeType: "application/vnd.google-apps.document" },
+    "files.export": Buffer.from("# Heading\n"),
+  });
+  try {
+    const client = await connectClient(ctx.url);
+    const listed = await client.listResources();
+    assert.deepEqual(listed.resources.map((r) => r.uri), ["googledrive:///f1"]);
+
+    const read = await client.readResource({ uri: "googledrive:///f1" });
+    assert.equal(read.contents[0].text, "# Heading\n");
+    assert.equal(read.contents[0].mimeType, "text/markdown");
+    const call = ctx.drive.calls.find((c) => c.path === "files.export");
+    assert.equal(call.params.mimeType, "text/markdown");
+    await client.close();
+  } finally {
+    await ctx.close();
+  }
+});
