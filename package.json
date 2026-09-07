@@ -1,5 +1,5 @@
 {
-  "name": "google-drive-mcp",
+  "name": "@quinnjr/google-drive-mcp",
   "version": "1.0.0",
   "description": "Model Context Protocol server exposing the full Google Drive v3 API over Streamable HTTP",
   "license": "MIT",
@@ -7,6 +7,9 @@
   "main": "dist/index.js",
   "bin": {
     "google-drive-mcp": "dist/index.js"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "dist",

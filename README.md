@@ -1,4 +1,4 @@
-# google-drive-mcp
+# @quinnjr/google-drive-mcp
 
 A Model Context Protocol server for Google Drive with **complete Drive v3 API coverage**, served over **Streamable HTTP only**.
 
