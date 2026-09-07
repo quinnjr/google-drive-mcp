@@ -17,7 +17,19 @@ async function main(): Promise<void> {
   const tools = buildTools(config);
   const toolCount = config.readOnly ? tools.filter((t) => t.readOnly).length : tools.length;
 
-  const server = app.listen(config.port, config.host, () => {
+  // NB: app.listen(..., cb) registers cb as the server's 'error' listener too, so a bind failure
+  // would otherwise print the "listening" banner and exit 0. Handle the two events separately.
+  const server = app.listen(config.port, config.host);
+
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    const where = `${config.host}:${config.port}`;
+    if (err.code === "EADDRINUSE") log("error", `cannot bind ${where}: address already in use`);
+    else if (err.code === "EACCES") log("error", `cannot bind ${where}: permission denied`);
+    else log("error", `server error: ${err.message}`);
+    process.exit(1);
+  });
+
+  server.on("listening", () => {
     log("info", `${SERVER_NAME} ${SERVER_VERSION} listening on http://${config.host}:${config.port}${config.mcpPath}`);
     log("info", `transport: streamable-http (${config.stateful ? "stateful" : "stateless"})`);
     log("info", `credentials: ${auth.describe()}`);

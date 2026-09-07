@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { tool, type ToolDef } from "../registry.js";
 import { permissionBodySchema } from "../schemas.js";
-import { clean, jsonResult, pagingParams, permissionWriteParams, sharedDriveParams, withDriveDefaults } from "../util.js";
+import { clean, jsonResult, pagingParams100, permissionWriteParams, sharedDriveParams, withDriveDefaults } from "../util.js";
 
 export const permissionsTools: ToolDef[] = [
   tool({
@@ -13,7 +13,7 @@ export const permissionsTools: ToolDef[] = [
     inputSchema: {
       fileId: z.string().describe("The ID of the file or shared drive."),
       includePermissionsForView: z.string().optional().describe("Which additional view's permissions to include. Only 'published' is supported."),
-      ...pagingParams,
+      ...pagingParams100,
       ...permissionWriteParams,
       ...sharedDriveParams,
       fields: z.string().optional().describe("Partial-response selector, e.g. 'permissions(id,type,role,emailAddress),nextPageToken'."),

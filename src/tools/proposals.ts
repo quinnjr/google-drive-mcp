@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { tool, type ToolDef } from "../registry.js";
-import { clean, jsonResult, pagingParams } from "../util.js";
+import { clean, jsonResult, pagingParams100 } from "../util.js";
 
 export const accessProposalsTools: ToolDef[] = [
   tool({
@@ -11,7 +11,7 @@ export const accessProposalsTools: ToolDef[] = [
     idempotent: true,
     inputSchema: {
       fileId: z.string().describe("The ID of the file."),
-      ...pagingParams,
+      ...pagingParams100,
       fields: z.string().optional().describe("Partial-response selector."),
     },
     async handler(args, ctx) {
@@ -77,7 +77,7 @@ export const approvalsTools: ToolDef[] = [
     idempotent: true,
     inputSchema: {
       fileId: z.string().describe("The ID of the file."),
-      ...pagingParams,
+      ...pagingParams100,
       fields: z.string().optional().describe("Partial-response selector."),
     },
     async handler(args, ctx) {

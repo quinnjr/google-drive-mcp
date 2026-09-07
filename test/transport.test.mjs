@@ -167,6 +167,32 @@ test("the passthrough token from a request header reaches the Drive client", asy
     const client = await connectClient(ctx.url, { headers: { "x-google-access-token": "ya29.fake" } });
     const result = await client.callTool({ name: "drive_about_get", arguments: {} });
     assert.equal(result.isError, undefined);
+    // The assertion that actually discriminates: the credential factory saw the caller's token.
+    assert.deepEqual(ctx.tokensSeen, ["ya29.fake"]);
+    await client.close();
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("the passthrough token is ignored while passthrough is off", async () => {
+  const ctx = await startServer();
+  try {
+    const client = await connectClient(ctx.url, { headers: { "x-google-access-token": "ya29.fake" } });
+    await client.callTool({ name: "drive_about_get", arguments: {} });
+    assert.deepEqual(ctx.tokensSeen, [undefined]);
+    await client.close();
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("passthrough falls back to server credentials when no token is sent", async () => {
+  const ctx = await startServer({ GOOGLE_TOKEN_PASSTHROUGH: "1" });
+  try {
+    const client = await connectClient(ctx.url);
+    await client.callTool({ name: "drive_about_get", arguments: {} });
+    assert.deepEqual(ctx.tokensSeen, [undefined]);
     await client.close();
   } finally {
     await ctx.close();

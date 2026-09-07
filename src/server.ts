@@ -3,6 +3,7 @@ import type { Config } from "./config.js";
 import type { DriveFactory } from "./drive.js";
 import { registerTools, type ToolDef } from "./registry.js";
 import { assertInlineSize, isTextual, toBuffer } from "./media.js";
+import { log } from "./log.js";
 import { describeError, parseSize } from "./util.js";
 import { aboutTools, appsTools } from "./tools/about.js";
 import { changesTools, channelsTools } from "./tools/changes.js";
@@ -40,6 +41,9 @@ export function buildTools(config: Config): ToolDef[] {
   ];
 }
 
+/** Upper bound on files enumerated by resources/list, so an enormous Drive cannot stall a client. */
+const RESOURCE_LIST_LIMIT = 1000;
+
 /** Google Workspace types have no downloadable bytes; these are the export targets used for resource reads. */
 const EXPORT_AS: Record<string, string> = {
   "application/vnd.google-apps.document": "text/markdown",
@@ -69,27 +73,36 @@ export function createServer(config: Config, factory: DriveFactory): McpServer {
     "drive-file",
     new ResourceTemplate("googledrive:///{fileId}", {
       list: async () => {
-        try {
-          const drive = await factory.client();
+        const drive = await factory.client();
+        const resources: { uri: string; name: string; mimeType?: string; description?: string }[] = [];
+        let pageToken: string | undefined;
+
+        // Page through, so a large Drive is not silently truncated to the first 100 entries.
+        do {
           const res = await drive.files.list({
             pageSize: 100,
             orderBy: "recency desc",
             supportsAllDrives: true,
             includeItemsFromAllDrives: true,
-            fields: "files(id,name,mimeType,description)",
+            fields: "nextPageToken,files(id,name,mimeType,description)",
             q: "trashed = false",
+            ...(pageToken ? { pageToken } : {}),
           });
-          return {
-            resources: (res.data.files ?? []).map((f) => ({
+          for (const f of res.data.files ?? []) {
+            resources.push({
               uri: `googledrive:///${f.id}`,
               name: f.name ?? f.id ?? "untitled",
               mimeType: f.mimeType ?? undefined,
               description: f.description ?? undefined,
-            })),
-          };
-        } catch {
-          return { resources: [] };
+            });
+          }
+          pageToken = res.data.nextPageToken ?? undefined;
+        } while (pageToken && resources.length < RESOURCE_LIST_LIMIT);
+
+        if (pageToken) {
+          log("info", `resources/list truncated at ${resources.length} files; more remain in Drive`);
         }
+        return { resources };
       },
     }),
     {
@@ -122,7 +135,10 @@ export function createServer(config: Config, factory: DriveFactory): McpServer {
         }
         return { contents: [{ uri: uri.href, mimeType: effectiveType, blob: bytes.toString("base64") }] };
       } catch (err) {
-        throw new Error(describeError(err));
+        // Surface the reason: a revoked token must not look like an empty file.
+        const message = describeError(err);
+        log("warn", `resource read failed for ${fileId}: ${message}`);
+        throw new Error(message);
       }
     },
   );

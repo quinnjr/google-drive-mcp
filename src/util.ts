@@ -81,10 +81,33 @@ export const sharedDriveParams = {
     .describe("Whether the request applies to both My Drive and shared drive items. Defaults to true."),
 };
 
-export const pagingParams = {
-  pageSize: z.number().int().min(1).max(1000).optional().describe("Maximum number of items to return."),
-  pageToken: z.string().optional().describe("Token for the next page, from a previous response's nextPageToken."),
-};
+const pageToken = z
+  .string()
+  .optional()
+  .describe("Token for the next page, from a previous response's nextPageToken.");
+
+/**
+ * Drive's per-endpoint pageSize ceiling. Advertising a larger one would invite a caller to ask
+ * for it, get silently coerced down, and mistake a truncated page for a complete list.
+ */
+export function pagingParamsFor(max: 100 | 1000) {
+  return {
+    pageSize: z
+      .number()
+      .int()
+      .min(1)
+      .max(max)
+      .optional()
+      .describe(`Maximum number of items to return, up to ${max}. The service may return fewer; keep following nextPageToken until it is absent.`),
+    pageToken,
+  };
+}
+
+/** Endpoints documented to accept up to 1000: files, changes and revisions. */
+export const pagingParams = pagingParamsFor(1000);
+
+/** Endpoints documented to cap at 100: comments, replies, permissions, drives and approvals. */
+export const pagingParams100 = pagingParamsFor(100);
 
 export const permissionWriteParams = {
   useDomainAdminAccess: z

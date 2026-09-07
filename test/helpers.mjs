@@ -4,6 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { loadConfig } from "../dist/config.js";
 import { createApp } from "../dist/http.js";
 import { setLogLevel } from "../dist/log.js";
+import { currentContext } from "../dist/context.js";
 
 setLogLevel("silent");
 
@@ -78,13 +79,21 @@ export function fakeDrive(responses = {}) {
 export async function startServer(env = {}, responses = {}) {
   const config = configFrom(env);
   const drive = fakeDrive(responses);
-  const { app, shutdown } = createApp(config, { client: async () => drive.client });
+  // Record the per-request Google token the factory can see, so passthrough is actually observable.
+  const tokensSeen = [];
+  const { app, shutdown } = createApp(config, {
+    client: async () => {
+      tokensSeen.push(currentContext().googleAccessToken);
+      return drive.client;
+    },
+  });
   const http = createHttpServer(app);
   await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
   const { port } = http.address();
 
   return {
     drive,
+    tokensSeen,
     config,
     url: new URL(`http://127.0.0.1:${port}${config.mcpPath}`),
     baseUrl: `http://127.0.0.1:${port}`,

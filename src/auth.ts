@@ -11,6 +11,14 @@ import { currentContext } from "./context.js";
  *   3. an explicit service-account key (file or inline JSON),
  *   4. Application Default Credentials.
  */
+function readKeyFile(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (err) {
+    throw new Error(`Cannot read service account key at ${path}: ${(err as Error).message}`);
+  }
+}
+
 export class AuthProvider {
   #config: Config;
   #shared: Promise<AuthClient> | undefined;
@@ -24,8 +32,14 @@ export class AuthProvider {
     const c = this.#config;
     if (c.tokenPassthrough) return "per-request token (X-Google-Access-Token), falling back to server credentials";
     if (c.oauth.refreshToken || c.oauth.accessToken) return "oauth2 (env credentials)";
-    if (c.serviceAccount.keyJson) return "service account (inline JSON)";
-    if (c.serviceAccount.keyFile) return `service account (${c.serviceAccount.keyFile})`;
+    if (c.serviceAccount.keyJson) {
+      return `service account (inline JSON)${c.serviceAccount.subject ? ` impersonating ${c.serviceAccount.subject}` : ""}`;
+    }
+    if (c.serviceAccount.keyFile) {
+      return c.serviceAccount.subject
+        ? `service account (${c.serviceAccount.keyFile}) impersonating ${c.serviceAccount.subject}`
+        : `service account (${c.serviceAccount.keyFile})`;
+    }
     return "application default credentials";
   }
 
@@ -64,10 +78,14 @@ export class AuthProvider {
       return oauth;
     }
 
+    // Impersonation needs a JWT client built from the key itself; GoogleAuth has no way to pass
+    // a subject through. Read the key whenever a subject is configured, whatever the file is
+    // named — mounted secrets are routinely extensionless.
+    const needsJwt = Boolean(c.serviceAccount.keyJson || (c.serviceAccount.keyFile && c.serviceAccount.subject));
     const rawKey = c.serviceAccount.keyJson
       ? c.serviceAccount.keyJson
-      : c.serviceAccount.keyFile && c.serviceAccount.keyFile.endsWith(".json") && c.serviceAccount.subject
-        ? readFileSync(c.serviceAccount.keyFile, "utf8")
+      : needsJwt && c.serviceAccount.keyFile
+        ? readKeyFile(c.serviceAccount.keyFile)
         : undefined;
 
     if (rawKey) {
@@ -75,10 +93,18 @@ export class AuthProvider {
       try {
         key = JSON.parse(rawKey);
       } catch {
-        throw new Error("Service account key is not valid JSON.");
+        throw new Error(
+          `Service account key is not valid JSON${c.serviceAccount.keyFile ? ` (${c.serviceAccount.keyFile})` : ""}.`,
+        );
       }
       if (!key.client_email || !key.private_key) {
         throw new Error("Service account key is missing client_email or private_key.");
+      }
+      if (c.serviceAccount.subject && key.type !== "service_account") {
+        throw new Error(
+          "GOOGLE_IMPERSONATE_SUBJECT requires a service account key; the supplied credentials are of type " +
+            `${key.type ?? "unknown"}.`,
+        );
       }
       return new JWT({
         email: key.client_email,

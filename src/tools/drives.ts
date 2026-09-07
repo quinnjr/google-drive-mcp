@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { tool, type ToolDef } from "../registry.js";
 import { driveBodySchema } from "../schemas.js";
-import { clean, jsonResult, pagingParams, permissionWriteParams } from "../util.js";
+import { clean, jsonResult, pagingParams100, permissionWriteParams } from "../util.js";
 
 export const drivesTools: ToolDef[] = [
   tool({
@@ -16,7 +16,7 @@ export const drivesTools: ToolDef[] = [
         .string()
         .optional()
         .describe("Query string for searching shared drives, e.g. \"name contains 'Marketing'\" or 'hidden = false'."),
-      ...pagingParams,
+      ...pagingParams100,
       ...permissionWriteParams,
       fields: z.string().optional().describe("Partial-response selector, e.g. 'drives(id,name),nextPageToken'."),
     },
@@ -150,7 +150,7 @@ export const teamdrivesTools: ToolDef[] = [
     idempotent: true,
     inputSchema: {
       q: z.string().optional().describe("Query string for searching team drives."),
-      ...pagingParams,
+      ...pagingParams100,
       ...permissionWriteParams,
       fields: z.string().optional().describe("Partial-response selector."),
     },

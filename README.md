@@ -2,7 +2,7 @@
 
 A Model Context Protocol server for Google Drive with **complete Drive v3 API coverage**, served over **Streamable HTTP only**.
 
-66 tools cover all 63 methods of the Drive v3 REST API — files, permissions, comments, replies, revisions, shared drives, changes, watch channels, labels, access proposals, approvals, apps, operations and the deprecated Team Drive endpoints — plus dedicated tools for downloading file bytes and revision bytes, which the raw API folds into `files.get`/`revisions.get` with `alt=media`.
+66 tools cover all 64 methods of the Drive v3 REST API — files, permissions, comments, replies, revisions, shared drives, changes, watch channels, labels, access proposals, approvals, apps, operations and the deprecated Team Drive endpoints — plus dedicated tools for downloading file bytes and revision bytes, which the raw API folds into `files.get`/`revisions.get` with `alt=media`.
 
 ## Install and run
 
@@ -42,7 +42,7 @@ Credentials are resolved in this order; configure exactly one.
 | --- | --- | --- |
 | Per-request token | `GOOGLE_TOKEN_PASSTHROUGH=1` | Each client sends `X-Google-Access-Token: ya29...`; every call runs as that user. Falls back to the server's own credentials when the header is absent. |
 | OAuth2 user | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` | Refreshes access tokens automatically. |
-| Service account | `GOOGLE_SERVICE_ACCOUNT_KEY_FILE` or `GOOGLE_SERVICE_ACCOUNT_KEY_JSON`, optionally `GOOGLE_IMPERSONATE_SUBJECT` | Set the subject to impersonate a Workspace user via domain-wide delegation. |
+| Service account | `GOOGLE_SERVICE_ACCOUNT_KEY_FILE` or `GOOGLE_SERVICE_ACCOUNT_KEY_JSON`, optionally `GOOGLE_IMPERSONATE_SUBJECT` | Set the subject to impersonate a Workspace user via domain-wide delegation. The key file may be named anything — extensionless mounted secrets work. The startup banner names the impersonated user, so you can see delegation is live. |
 | ADC | none | Uses `gcloud auth application-default login` or the metadata server. |
 
 Default scopes are `drive` and `drive.appdata`. Narrow them with `GOOGLE_SCOPES` (comma-separated); note that `drive.file` restricts the server to files this app created.
@@ -69,6 +69,8 @@ Every value is validated at startup: an unparseable `DRIVE_READ_ONLY=maybe` or `
 ## Tools
 
 Every list tool paginates through `pageToken`, and nearly every tool accepts a `fields` partial-response selector — pass one to keep responses small (`fields: "files(id,name,modifiedTime),nextPageToken"`). Shared-drive support (`supportsAllDrives`, `includeItemsFromAllDrives`) defaults to on.
+
+Each tool's `pageSize` ceiling matches its endpoint's documented maximum — 1000 for files, changes and revisions; 100 for comments, replies, permissions, drives and approvals — so an over-large request is refused rather than silently coerced down into a page you might mistake for the whole list.
 
 **Files** — `drive_files_list` (Drive query language), `drive_files_get`, `drive_files_get_content`, `drive_files_export`, `drive_files_download` (long-running, for exports over 10 MB), `drive_files_create`, `drive_files_update`, `drive_files_copy`, `drive_files_delete`, `drive_files_empty_trash`, `drive_files_generate_ids`, `drive_files_list_labels`, `drive_files_modify_labels`, `drive_files_watch`, `drive_files_generate_cse_token`
 
@@ -119,6 +121,8 @@ Google Workspace documents have no downloadable bytes: use `drive_files_export` 
 
 Files are also exposed as MCP resources at `googledrive:///FILE_ID`. Reading one returns the file's text where possible; Google Docs are exported to Markdown, Sheets to CSV, Slides to plain text, Drawings to PNG and Apps Script projects to JSON. Resource reads respect `DRIVE_MAX_INLINE_BYTES`.
 
+Listing resources pages through Drive (up to 1000 files) rather than stopping at the first page, and a failure propagates as an error — an expired token reports itself instead of looking like an empty Drive.
+
 ## Security notes
 
 - Bind to loopback, or set `MCP_AUTH_TOKEN` **and** `MCP_ALLOWED_HOSTS` before exposing the port.
@@ -132,7 +136,7 @@ Files are also exposed as MCP resources at `googledrive:///FILE_ID`. Reading one
 
 ```bash
 pnpm typecheck
-pnpm test          # builds, then runs 44 integration tests over the real HTTP transport
+pnpm test          # builds, then runs 53 integration tests over the real HTTP transport
 ```
 
-The test suite drives every registered tool through a stubbed googleapis client and asserts that all 63 Drive v3 methods are reached, so a missing or misrouted tool fails the build.
+The test suite drives every registered tool through a stubbed googleapis client and asserts that all 64 Drive v3 methods are reached, so a missing or misrouted tool fails the build.

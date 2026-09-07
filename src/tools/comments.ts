@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { tool, type ToolDef } from "../registry.js";
-import { clean, jsonResult, pagingParams } from "../util.js";
+import { clean, jsonResult, pagingParams100 } from "../util.js";
 
 /** Fields Drive accepts when a comment is created. `resolved` is output-only; resolve a thread
  *  by posting a reply with action 'resolve'. */
@@ -30,7 +30,7 @@ export const commentsTools: ToolDef[] = [
       fileId: z.string().describe("The ID of the file."),
       includeDeleted: z.boolean().optional().describe("Include deleted comments (their content will be stripped)."),
       startModifiedTime: z.string().optional().describe("RFC 3339 lower bound on the comment's modifiedTime."),
-      ...pagingParams,
+      ...pagingParams100,
       fields: z
         .string()
         .optional()
@@ -133,7 +133,7 @@ export const repliesTools: ToolDef[] = [
       fileId: z.string().describe("The ID of the file."),
       commentId: z.string().describe("The ID of the comment."),
       includeDeleted: z.boolean().optional().describe("Include deleted replies (their content will be stripped)."),
-      ...pagingParams,
+      ...pagingParams100,
       fields: z.string().optional().describe("Partial-response selector. Defaults to '*'."),
     },
     async handler(args, ctx) {

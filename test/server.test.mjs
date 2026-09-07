@@ -533,3 +533,78 @@ test("a text response that gaxios already decoded is not latin1-mangled", async 
     await ctx.close();
   }
 });
+
+test("pageSize ceilings match each endpoint's documented maximum", async () => {
+  const ctx = await startServer();
+  try {
+    const client = await connectClient(ctx.url);
+    const { tools } = await client.listTools();
+    const maxOf = (name) =>
+      tools.find((t) => t.name === name).inputSchema.properties.pageSize?.maximum;
+
+    for (const name of ["drive_files_list", "drive_changes_list", "drive_revisions_list"]) {
+      assert.equal(maxOf(name), 1000, name);
+    }
+    for (const name of [
+      "drive_comments_list",
+      "drive_replies_list",
+      "drive_permissions_list",
+      "drive_drives_list",
+      "drive_teamdrives_list",
+      "drive_approvals_list",
+      "drive_accessproposals_list",
+    ]) {
+      assert.equal(maxOf(name), 100, name);
+    }
+
+    // A value the API would coerce down is rejected up front rather than silently truncated.
+    const refused = await client.callTool({
+      name: "drive_permissions_list",
+      arguments: { fileId: "f1", pageSize: 1000 },
+    });
+    assert.equal(refused.isError, true);
+    await client.close();
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("resources/list pages through Drive instead of stopping at the first page", async () => {
+  let page = 0;
+  const ctx = await startServer({}, {
+    "files.list": () => {
+      page += 1;
+      return {
+        files: [{ id: `f${page}`, name: `File ${page}`, mimeType: "text/plain" }],
+        nextPageToken: page < 3 ? `p${page}` : undefined,
+      };
+    },
+  });
+  try {
+    const client = await connectClient(ctx.url);
+    const { resources } = await client.listResources();
+    assert.deepEqual(resources.map((r) => r.uri), ["googledrive:///f1", "googledrive:///f2", "googledrive:///f3"]);
+    assert.equal(ctx.drive.callsTo("files.list").length, 3);
+    assert.equal(ctx.drive.callsTo("files.list")[1].params.pageToken, "p1");
+    await client.close();
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("a failing resources/list surfaces the error instead of reporting an empty Drive", async () => {
+  const ctx = await startServer({}, {
+    "files.list": () => {
+      const err = new Error("Request failed with status code 401");
+      err.response = { status: 401, data: { error: { message: "Invalid Credentials", status: "UNAUTHENTICATED" } } };
+      throw err;
+    },
+  });
+  try {
+    const client = await connectClient(ctx.url);
+    await assert.rejects(() => client.listResources(), /401|Invalid Credentials/);
+    await client.close();
+  } finally {
+    await ctx.close();
+  }
+});
