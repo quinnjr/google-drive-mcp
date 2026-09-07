@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { generateKeyPairSync } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,13 +7,16 @@ import test from "node:test";
 import { AuthProvider } from "../dist/auth.js";
 import { configFrom } from "./helpers.mjs";
 
-// A syntactically valid throwaway key: never used against Google, only to build a JWT client.
+// Generated per run rather than checked in, so no key-shaped literal lives in the repository.
+// It is never used against Google; it only has to be well-formed enough to build a JWT client.
 const KEY = {
   type: "service_account",
   project_id: "test",
   client_email: "robot@test.iam.gserviceaccount.com",
-  private_key:
-    "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIDVCyug2Nsyd8sJH1lXQ9E3PfMD1nQ0lVJ0mnDNTNAsL\n-----END PRIVATE KEY-----\n",
+  private_key: generateKeyPairSync("ed25519", {
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    publicKeyEncoding: { type: "spki", format: "pem" },
+  }).privateKey,
 };
 
 function keyFileNamed(basename) {
