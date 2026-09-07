@@ -2,8 +2,8 @@ import { McpServer, ResourceTemplate } from "@modelcontextprotocol/sdk/server/mc
 import type { Config } from "./config.js";
 import type { DriveFactory } from "./drive.js";
 import { registerTools, type ToolDef } from "./registry.js";
-import { toBuffer } from "./media.js";
-import { describeError } from "./util.js";
+import { assertInlineSize, isTextual, toBuffer } from "./media.js";
+import { describeError, parseSize } from "./util.js";
 import { aboutTools, appsTools } from "./tools/about.js";
 import { changesTools, channelsTools } from "./tools/changes.js";
 import { commentsTools, repliesTools } from "./tools/comments.js";
@@ -16,24 +16,29 @@ import { revisionsTools } from "./tools/revisions.js";
 export const SERVER_NAME = "google-drive-mcp";
 export const SERVER_VERSION = "1.0.0";
 
-export const allTools: ToolDef[] = [
-  ...aboutTools,
-  ...appsTools,
-  ...changesTools,
-  ...channelsTools,
-  ...filesTools,
-  ...permissionsTools,
-  ...commentsTools,
-  ...repliesTools,
-  ...revisionsTools,
-  ...drivesTools,
-  ...accessProposalsTools,
-  ...approvalsTools,
-  ...operationsTools,
-  ...teamdrivesTools,
-];
-
-const TEXTUAL = /^(text\/|application\/(json|xml|csv|rtf|javascript|x-yaml|yaml))/;
+/**
+ * The full tool set. Two families vary with configuration — the download tools only offer a
+ * server-side destinationPath when local file access is enabled — so this is a function, not a
+ * constant.
+ */
+export function buildTools(config: Config): ToolDef[] {
+  return [
+    ...aboutTools,
+    ...appsTools,
+    ...changesTools,
+    ...channelsTools,
+    ...filesTools(config),
+    ...permissionsTools,
+    ...commentsTools,
+    ...repliesTools,
+    ...revisionsTools(config),
+    ...drivesTools,
+    ...accessProposalsTools,
+    ...approvalsTools,
+    ...operationsTools,
+    ...teamdrivesTools,
+  ];
+}
 
 /** Google Workspace types have no downloadable bytes; these are the export targets used for resource reads. */
 const EXPORT_AS: Record<string, string> = {
@@ -44,7 +49,7 @@ const EXPORT_AS: Record<string, string> = {
   "application/vnd.google-apps.script": "application/vnd.google-apps.script+json",
 };
 
-export function createServer(config: Config, factory: DriveFactory): { server: McpServer; toolNames: string[] } {
+export function createServer(config: Config, factory: DriveFactory): McpServer {
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
@@ -58,7 +63,7 @@ export function createServer(config: Config, factory: DriveFactory): { server: M
     },
   );
 
-  const toolNames = registerTools(server, factory, config, allTools);
+  registerTools(server, factory, config, buildTools(config));
 
   server.registerResource(
     "drive-file",
@@ -96,17 +101,23 @@ export function createServer(config: Config, factory: DriveFactory): { server: M
       const fileId = String(Array.isArray(variables.fileId) ? variables.fileId[0] : variables.fileId);
       try {
         const drive = await factory.client();
-        const meta = await drive.files.get({ fileId, fields: "name,mimeType", supportsAllDrives: true });
+        const meta = await drive.files.get({ fileId, fields: "name,mimeType,size", supportsAllDrives: true });
         const mimeType = meta.data.mimeType ?? "application/octet-stream";
         const exportType = EXPORT_AS[mimeType];
+
+        // Binary files declare their size up front; refuse oversized reads before transferring.
+        const declared = parseSize(meta.data.size);
+        if (!exportType && declared !== undefined) assertInlineSize(declared, config, true);
 
         const res = exportType
           ? await drive.files.export({ fileId, mimeType: exportType }, { responseType: "arraybuffer" })
           : await drive.files.get({ fileId, alt: "media", supportsAllDrives: true }, { responseType: "arraybuffer" });
 
         const bytes = toBuffer(res.data);
+        assertInlineSize(bytes.byteLength, config, true);
+
         const effectiveType = exportType ?? mimeType;
-        if (TEXTUAL.test(effectiveType)) {
+        if (isTextual(effectiveType)) {
           return { contents: [{ uri: uri.href, mimeType: effectiveType, text: bytes.toString("utf8") }] };
         }
         return { contents: [{ uri: uri.href, mimeType: effectiveType, blob: bytes.toString("base64") }] };
@@ -116,5 +127,5 @@ export function createServer(config: Config, factory: DriveFactory): { server: M
     },
   );
 
-  return { server, toolNames };
+  return server;
 }

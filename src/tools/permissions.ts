@@ -48,6 +48,7 @@ export const permissionsTools: ToolDef[] = [
     title: "Share a file",
     description:
       "Grant access to a file or shared drive. Set permission.type ('user', 'group', 'domain' or 'anyone') and permission.role. Use type 'anyone' with role 'reader' to create a public link.",
+    destructive: true,
     inputSchema: {
       fileId: z.string().describe("The ID of the file or shared drive."),
       permission: permissionBodySchema.describe("The permission to create; type and role are required."),
@@ -83,6 +84,7 @@ export const permissionsTools: ToolDef[] = [
     name: "drive_permissions_update",
     title: "Update a permission",
     description: "Change an existing permission's role, expiration or ownership status.",
+    destructive: true,
     inputSchema: {
       fileId: z.string().describe("The ID of the file or shared drive."),
       permissionId: z.string().describe("The ID of the permission to update."),

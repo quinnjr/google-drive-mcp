@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { tool, type ToolDef } from "../registry.js";
-import { clean, jsonResult, pagingParams, sharedDriveParams, withDriveDefaults } from "../util.js";
+import { clean, jsonResult, pagingParams, sharedDriveParams, withCorpusDefaults, withDriveDefaults } from "../util.js";
 
 const channelShape = {
   id: z.string().describe("A UUID or similar unique string that identifies this channel."),
@@ -67,9 +67,7 @@ export const changesTools: ToolDef[] = [
     },
     async handler(args, ctx) {
       const drive = await ctx.drive();
-      const params = withDriveDefaults(clean(args));
-      if (params.includeItemsFromAllDrives === undefined) params.includeItemsFromAllDrives = true;
-      const res = await drive.changes.list(params);
+      const res = await drive.changes.list(withCorpusDefaults(clean(args)));
       return jsonResult(res.data);
     },
   }),
@@ -78,6 +76,7 @@ export const changesTools: ToolDef[] = [
     title: "Watch changes",
     description:
       "Subscribe to change notifications for a user or shared drive; Drive POSTs notifications to the channel address. Returns the channel resource, including the resourceId needed to stop it.",
+    destructive: false,
     inputSchema: {
       pageToken: z.string().describe("Token identifying where to start watching changes."),
       driveId: z.string().optional().describe("Watch changes for this shared drive only."),
@@ -97,7 +96,7 @@ export const changesTools: ToolDef[] = [
       const { channel, ...rest } = args;
       const drive = await ctx.drive();
       const res = await drive.changes.watch({
-        ...withDriveDefaults(clean(rest)),
+        ...withCorpusDefaults(clean(rest)),
         requestBody: clean({ type: "web_hook", ...channel }),
       });
       return jsonResult(res.data);

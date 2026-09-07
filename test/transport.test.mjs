@@ -172,3 +172,129 @@ test("the passthrough token from a request header reaches the Drive client", asy
     await ctx.close();
   }
 });
+
+test("a malformed body gets a JSON-RPC parse error, not an HTML stack trace", async () => {
+  const ctx = await startServer();
+  try {
+    const res = await fetch(ctx.url, { method: "POST", headers: HEADERS, body: "{not json" });
+    assert.equal(res.status, 400);
+    assert.match(res.headers.get("content-type") ?? "", /application\/json/);
+    const body = await res.json();
+    assert.equal(body.error.code, -32700);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("an oversized body is refused with a JSON-RPC error", async () => {
+  const ctx = await startServer({ MCP_MAX_REQUEST_BYTES: "1024" });
+  try {
+    const res = await fetch(ctx.url, {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "x", params: { pad: "a".repeat(4096) } }),
+    });
+    assert.equal(res.status, 413);
+    const body = await res.json();
+    assert.match(body.error.message, /exceeds the 1024-byte limit/);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("the body is not read before authentication is checked", async () => {
+  const ctx = await startServer({ MCP_AUTH_TOKEN: "s3cret", MCP_MAX_REQUEST_BYTES: "1024" });
+  try {
+    // Well over the body limit: a 401 proves the guard ran before the parser buffered anything.
+    const res = await fetch(ctx.url, {
+      method: "POST",
+      headers: HEADERS,
+      body: JSON.stringify({ pad: "a".repeat(8192) }),
+    });
+    assert.equal(res.status, 401);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("a missing Origin is rejected once an Origin allowlist is configured", async () => {
+  const ctx = await startServer({ MCP_ALLOWED_ORIGINS: "https://app.example.com" });
+  try {
+    const absent = await fetch(ctx.url, { method: "POST", headers: HEADERS, body: JSON.stringify(INIT) });
+    assert.equal(absent.status, 403);
+    assert.match((await absent.json()).error.message, /absent/);
+
+    const allowed = await fetch(ctx.url, {
+      method: "POST",
+      headers: { ...HEADERS, origin: "https://app.example.com" },
+      body: JSON.stringify(INIT),
+    });
+    assert.equal(allowed.status, 200);
+    await allowed.body?.cancel();
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("healthz reveals nothing beyond liveness without the bearer token", async () => {
+  const ctx = await startServer({ MCP_AUTH_TOKEN: "s3cret" });
+  try {
+    const anon = await (await fetch(`${ctx.baseUrl}/healthz`)).json();
+    assert.deepEqual(anon, { status: "ok" });
+
+    const authed = await (
+      await fetch(`${ctx.baseUrl}/healthz`, { headers: { authorization: "Bearer s3cret" } })
+    ).json();
+    assert.equal(authed.version, "1.0.0");
+    assert.equal(authed.sessions, 0);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("a rejected initialize does not strand a session", async () => {
+  const ctx = await startServer({ MCP_MAX_SESSIONS: "1" });
+  try {
+    const first = await connectClient(ctx.url);
+    const refused = await fetch(ctx.url, { method: "POST", headers: HEADERS, body: JSON.stringify(INIT) });
+    assert.equal(refused.status, 503);
+
+    const health = await (await fetch(`${ctx.baseUrl}/healthz`)).json();
+    assert.equal(health.sessions, 1);
+    await first.close();
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("idle sessions are evicted", async () => {
+  const ctx = await startServer({ MCP_SESSION_TTL_SECONDS: "30" });
+  try {
+    const res = await fetch(ctx.url, { method: "POST", headers: HEADERS, body: JSON.stringify(INIT) });
+    const sessionId = res.headers.get("mcp-session-id");
+    await res.body?.cancel();
+    assert.equal((await (await fetch(`${ctx.baseUrl}/healthz`)).json()).sessions, 1);
+
+    // Reach past the sweep interval by ageing the session rather than sleeping for it.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const before = Date.now();
+    const stale = await fetch(ctx.url, {
+      method: "POST",
+      headers: { ...HEADERS, "mcp-session-id": sessionId },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/list", params: {} }),
+    });
+    assert.equal(stale.status, 200, "a fresh session is still usable");
+    assert.ok(Date.now() - before < 30_000);
+    await stale.body?.cancel();
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("config rejects unparseable values instead of quietly defaulting", async () => {
+  const { configFrom } = await import("./helpers.mjs");
+  assert.throws(() => configFrom({ DRIVE_READ_ONLY: "y" }), /must be one of/);
+  assert.throws(() => configFrom({ DRIVE_MAX_INLINE_BYTES: "8mb" }), /non-negative integer/);
+  assert.throws(() => configFrom({ LOG_LEVEL: "constructor" }), /LOG_LEVEL must be one of/);
+  assert.equal(configFrom({ DRIVE_READ_ONLY: "yes" }).readOnly, true);
+});

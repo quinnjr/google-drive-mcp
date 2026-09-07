@@ -41,6 +41,7 @@ export const accessProposalsTools: ToolDef[] = [
     name: "drive_accessproposals_resolve",
     title: "Resolve an access proposal",
     description: "Accept or deny a request for access to a file. Accepting grants the requester the given role(s).",
+    destructive: true,
     inputSchema: {
       fileId: z.string().describe("The ID of the file."),
       proposalId: z.string().describe("The ID of the access proposal."),
@@ -50,13 +51,14 @@ export const accessProposalsTools: ToolDef[] = [
       role: z
         .array(z.enum(["writer", "commenter", "reader"]))
         .optional()
-        .describe("Roles to grant when accepting. Defaults to ['reader'] if omitted on an ACCEPT."),
+        .describe("Roles to grant when accepting. Defaults to ['reader'] when omitted on an ACCEPT; ignored on a DENY."),
       view: z.string().optional().describe("Indicates the view for this access proposal; only 'published' is supported."),
       sendNotification: z.boolean().optional().describe("Whether to email the requester about the decision."),
       fields: z.string().optional().describe("Partial-response selector."),
     },
     async handler(args, ctx) {
       const { fileId, proposalId, fields, ...body } = args;
+      if (body.action === "ACCEPT" && !body.role?.length) body.role = ["reader"];
       const drive = await ctx.drive();
       const res = await drive.accessproposals.resolve(
         clean({ fileId, proposalId, fields, requestBody: clean(body) }),
@@ -105,6 +107,7 @@ export const approvalsTools: ToolDef[] = [
     name: "drive_approvals_start",
     title: "Start an approval",
     description: "Start an approval request on a file, sending it to the given reviewers.",
+    destructive: false,
     inputSchema: {
       fileId: z.string().describe("The ID of the file to send for approval."),
       reviewerEmails: z.array(z.string()).describe("Email addresses of the reviewers."),
@@ -128,6 +131,7 @@ export const approvalsTools: ToolDef[] = [
     name: "drive_approvals_approve",
     title: "Approve an approval",
     description: "Record the caller's approval on an approval request.",
+    destructive: false,
     inputSchema: {
       fileId: z.string().describe("The ID of the file."),
       approvalId: z.string().describe("The ID of the approval."),
@@ -145,6 +149,7 @@ export const approvalsTools: ToolDef[] = [
     name: "drive_approvals_decline",
     title: "Decline an approval",
     description: "Record the caller's rejection of an approval request.",
+    destructive: false,
     inputSchema: {
       fileId: z.string().describe("The ID of the file."),
       approvalId: z.string().describe("The ID of the approval."),
@@ -162,6 +167,7 @@ export const approvalsTools: ToolDef[] = [
     name: "drive_approvals_comment",
     title: "Comment on an approval",
     description: "Add a comment to an approval request without approving or declining it.",
+    destructive: false,
     inputSchema: {
       fileId: z.string().describe("The ID of the file."),
       approvalId: z.string().describe("The ID of the approval."),
@@ -179,6 +185,7 @@ export const approvalsTools: ToolDef[] = [
     name: "drive_approvals_reassign",
     title: "Reassign an approval",
     description: "Add reviewers to an approval request, or replace existing reviewers with others.",
+    destructive: true,
     inputSchema: {
       fileId: z.string().describe("The ID of the file."),
       approvalId: z.string().describe("The ID of the approval."),

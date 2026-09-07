@@ -47,13 +47,14 @@ export const drivesTools: ToolDef[] = [
     name: "drive_drives_create",
     title: "Create a shared drive",
     description:
-      "Create a new shared drive. A requestId makes the call idempotent: repeating it with the same ID returns the drive created the first time.",
+      "Create a new shared drive. Pass your own requestId to make retries idempotent — repeating a call with the same ID returns the drive created the first time. When omitted a fresh ID is generated per call, so a retried call creates a second drive.",
+    destructive: false,
     inputSchema: {
       drive: driveBodySchema.describe("The shared drive to create; name is required."),
       requestId: z
         .string()
         .optional()
-        .describe("Idempotency key for this creation. A random UUID is generated when omitted."),
+        .describe("Idempotency key for this creation. Reuse it across retries; a fresh UUID is generated when omitted, which does NOT deduplicate retries."),
       fields: z.string().optional().describe("Partial-response selector."),
     },
     async handler(args, ctx) {
@@ -70,6 +71,7 @@ export const drivesTools: ToolDef[] = [
     name: "drive_drives_update",
     title: "Update a shared drive",
     description: "Update a shared drive's name, theme, background or restrictions.",
+    destructive: true,
     inputSchema: {
       driveId: z.string().describe("The ID of the shared drive."),
       drive: driveBodySchema.describe("The fields to change."),
@@ -109,6 +111,7 @@ export const drivesTools: ToolDef[] = [
     title: "Hide a shared drive",
     description: "Hide a shared drive from the user's default view.",
     idempotent: true,
+    destructive: false,
     inputSchema: {
       driveId: z.string().describe("The ID of the shared drive to hide."),
       fields: z.string().optional().describe("Partial-response selector."),
@@ -124,6 +127,7 @@ export const drivesTools: ToolDef[] = [
     title: "Unhide a shared drive",
     description: "Restore a hidden shared drive to the user's default view.",
     idempotent: true,
+    destructive: false,
     inputSchema: {
       driveId: z.string().describe("The ID of the shared drive to unhide."),
       fields: z.string().optional().describe("Partial-response selector."),
@@ -177,9 +181,10 @@ export const teamdrivesTools: ToolDef[] = [
     name: "drive_teamdrives_create",
     title: "Create a team drive (deprecated)",
     description: "Deprecated Team Drives endpoint. Use drive_drives_create instead.",
+    destructive: false,
     inputSchema: {
       teamDrive: driveBodySchema.describe("The team drive to create; name is required."),
-      requestId: z.string().optional().describe("Idempotency key. A random UUID is generated when omitted."),
+      requestId: z.string().optional().describe("Idempotency key. Reuse it across retries; a fresh UUID is generated when omitted."),
       fields: z.string().optional().describe("Partial-response selector."),
     },
     async handler(args, ctx) {
@@ -196,6 +201,7 @@ export const teamdrivesTools: ToolDef[] = [
     name: "drive_teamdrives_update",
     title: "Update a team drive (deprecated)",
     description: "Deprecated Team Drives endpoint. Use drive_drives_update instead.",
+    destructive: true,
     inputSchema: {
       teamDriveId: z.string().describe("The ID of the team drive."),
       teamDrive: driveBodySchema.describe("The fields to change."),

@@ -2,7 +2,9 @@ import { z } from "zod";
 import { tool, type ToolDef } from "../registry.js";
 import { clean, jsonResult, pagingParams } from "../util.js";
 
-const commentBody = {
+/** Fields Drive accepts when a comment is created. `resolved` is output-only; resolve a thread
+ *  by posting a reply with action 'resolve'. */
+const commentCreateBody = {
   content: z.string().describe("The plain-text content of the comment."),
   anchor: z
     .string()
@@ -15,7 +17,6 @@ const commentBody = {
     })
     .optional()
     .describe("The file content the comment quotes."),
-  resolved: z.boolean().optional().describe("Whether the comment thread is resolved."),
 };
 
 export const commentsTools: ToolDef[] = [
@@ -63,9 +64,10 @@ export const commentsTools: ToolDef[] = [
     name: "drive_comments_create",
     title: "Create a comment",
     description: "Add a comment to a file.",
+    destructive: false,
     inputSchema: {
       fileId: z.string().describe("The ID of the file."),
-      ...commentBody,
+      ...commentCreateBody,
       fields: z.string().optional().describe("Partial-response selector. Defaults to '*'."),
     },
     async handler(args, ctx) {
@@ -78,17 +80,19 @@ export const commentsTools: ToolDef[] = [
   tool({
     name: "drive_comments_update",
     title: "Update a comment",
-    description: "Update a comment's content or resolved state.",
+    description:
+      "Update a comment's content. Content is the only writable field; to resolve or reopen a thread, post a reply with action 'resolve' or 'reopen'.",
+    destructive: true,
     inputSchema: {
       fileId: z.string().describe("The ID of the file."),
       commentId: z.string().describe("The ID of the comment."),
-      ...commentBody,
+      content: z.string().describe("The new plain-text content of the comment, replacing the current content."),
       fields: z.string().optional().describe("Partial-response selector. Defaults to '*'."),
     },
     async handler(args, ctx) {
-      const { fileId, commentId, fields, ...body } = args;
+      const { fileId, commentId, fields, content } = args;
       const drive = await ctx.drive();
-      const res = await drive.comments.update({ fileId, commentId, fields: fields ?? "*", requestBody: clean(body) });
+      const res = await drive.comments.update({ fileId, commentId, fields: fields ?? "*", requestBody: { content } });
       return jsonResult(res.data);
     },
   }),
@@ -161,6 +165,7 @@ export const repliesTools: ToolDef[] = [
     name: "drive_replies_create",
     title: "Reply to a comment",
     description: "Add a reply to a comment, optionally resolving or reopening the thread.",
+    destructive: false,
     inputSchema: {
       fileId: z.string().describe("The ID of the file."),
       commentId: z.string().describe("The ID of the comment being replied to."),
@@ -178,6 +183,7 @@ export const repliesTools: ToolDef[] = [
     name: "drive_replies_update",
     title: "Update a reply",
     description: "Update the content of a reply.",
+    destructive: true,
     inputSchema: {
       fileId: z.string().describe("The ID of the file."),
       commentId: z.string().describe("The ID of the comment."),

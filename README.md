@@ -54,12 +54,17 @@ Default scopes are `drive` and `drive.appdata`. Narrow them with `GOOGLE_SCOPES`
 | `HOST` / `PORT` / `MCP_PATH` | `127.0.0.1` / `3000` / `/mcp` | Listen address and endpoint path. |
 | `MCP_AUTH_TOKEN` | unset | Required bearer token, compared in constant time. The server warns loudly when unset. |
 | `MCP_ALLOWED_HOSTS` | unset | Comma-separated `Host` allowlist. Set this whenever the server is not bound to loopback. |
-| `MCP_ALLOWED_ORIGINS` | unset | Comma-separated `Origin` allowlist for browser clients. |
+| `MCP_ALLOWED_ORIGINS` | unset | Comma-separated `Origin` allowlist for browser clients. Once set, a request with **no** `Origin` header is rejected too, so a browser cannot bypass the check by omitting it — leave it empty for CLI clients. |
 | `MCP_STATEFUL` | `1` | `1` issues an `Mcp-Session-Id` per client and supports the SSE `GET` stream and `DELETE` termination. `0` serves each POST from a fresh server instance. |
-| `DRIVE_READ_ONLY` | `0` | `1` registers only the 31 read-only tools; nothing that writes is even advertised. |
-| `DRIVE_ALLOW_LOCAL_FILES` | `0` | Gates `media.localPath` uploads and `destinationPath` downloads, which touch the server's filesystem. |
-| `DRIVE_MAX_INLINE_BYTES` | `8388608` | Cap on bytes returned inline from download/export tools. |
+| `MCP_SESSION_TTL_SECONDS` | `1800` | Idle time after which a session is evicted and its server torn down. |
+| `MCP_MAX_SESSIONS` | `256` | Cap on concurrent sessions; further `initialize` calls get a 503. |
+| `MCP_MAX_REQUEST_BYTES` | `4194304` | Largest accepted JSON body. Auth is checked *before* the body is read. |
+| `DRIVE_READ_ONLY` | `0` | `1` registers only the read-only tools (31, or 28 when local file access is on); nothing that writes is even advertised. |
+| `DRIVE_ALLOW_LOCAL_FILES` | `0` | Gates `media.localPath` uploads and `destinationPath` downloads. While off, `destinationPath` is absent from the tool schemas entirely. |
+| `DRIVE_MAX_INLINE_BYTES` | `8388608` | Cap on bytes returned inline from downloads, exports and resource reads. Enforced from the file's declared size before any transfer, where Drive reports one. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`, `silent`. |
+
+Every value is validated at startup: an unparseable `DRIVE_READ_ONLY=maybe` or `DRIVE_MAX_INLINE_BYTES=8mb` aborts the boot rather than silently falling back to a default.
 
 ## Tools
 
@@ -83,7 +88,7 @@ Every list tool paginates through `pageToken`, and nearly every tool accepts a `
 
 ### Content handling
 
-`drive_files_create` and `drive_files_update` take a `media` object with exactly one of `text`, `base64` or `localPath`. Downloads come back as text when the MIME type is textual, as an `image` part for images, and as a base64 resource otherwise — or are written straight to `destinationPath` when local file access is enabled.
+`drive_files_create` and `drive_files_update` take a `media` object with exactly one of `text`, `base64` or `localPath`. `media.mimeType` is the **source** Content-Type; the conversion target goes in `metadata.mimeType`. Downloads come back as text when the MIME type is textual, as an `image` part for images, and as a base64 resource otherwise — or are written straight to `destinationPath` when local file access is enabled.
 
 Google Workspace documents have no downloadable bytes: use `drive_files_export` with a target MIME type (`text/markdown`, `text/csv`, `application/pdf`, …). `drive_about_get` lists every supported import and export conversion.
 
@@ -93,7 +98,8 @@ Google Workspace documents have no downloadable bytes: use `drive_files_export` 
 // Create a folder
 {"name": "drive_files_create", "arguments": {"metadata": {"name": "Reports", "mimeType": "application/vnd.google-apps.folder"}}}
 
-// Upload a CSV and convert it to a Google Sheet
+// Upload a CSV and convert it to a Google Sheet.
+// metadata.mimeType is the target; media.mimeType is the source being uploaded.
 {"name": "drive_files_create", "arguments": {
   "metadata": {"name": "Q3", "mimeType": "application/vnd.google-apps.spreadsheet", "parents": ["FOLDER_ID"]},
   "media": {"text": "a,b\n1,2\n", "mimeType": "text/csv"}}}
@@ -111,20 +117,22 @@ Google Workspace documents have no downloadable bytes: use `drive_files_export` 
 
 ## Resources
 
-Files are also exposed as MCP resources at `googledrive:///FILE_ID`. Reading one returns the file's text where possible; Google Docs are exported to Markdown, Sheets to CSV, Slides to plain text and Drawings to PNG.
+Files are also exposed as MCP resources at `googledrive:///FILE_ID`. Reading one returns the file's text where possible; Google Docs are exported to Markdown, Sheets to CSV, Slides to plain text, Drawings to PNG and Apps Script projects to JSON. Resource reads respect `DRIVE_MAX_INLINE_BYTES`.
 
 ## Security notes
 
 - Bind to loopback, or set `MCP_AUTH_TOKEN` **and** `MCP_ALLOWED_HOSTS` before exposing the port.
-- Local filesystem access is off by default; a compromised client cannot read server-side paths or write to them unless you opt in.
+- Authentication runs before the request body is read, so an unauthenticated caller cannot make the server buffer megabytes.
+- `GET /healthz` returns only `{"status":"ok"}` to an unauthenticated caller; the version and live session count need the bearer token.
+- Local filesystem access is off by default, and while it is off `destinationPath` and `media.localPath` are refused — a client cannot read or overwrite server-side paths. With it on, the download tools stop claiming `readOnlyHint` and are excluded from read-only mode, because writing a file is not a read-only act.
 - `DRIVE_READ_ONLY=1` is the safest posture for exploratory use — deletions in Drive are effectively irreversible once the trash is emptied.
-- Tools carry MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`) so hosts can prompt appropriately before writes.
+- Tools carry MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`). Every writing tool declares `destructiveHint` explicitly rather than inheriting a default, and a test enforces that.
 
 ## Development
 
 ```bash
 pnpm typecheck
-pnpm test          # builds, then runs 22 integration tests over the real HTTP transport
+pnpm test          # builds, then runs 44 integration tests over the real HTTP transport
 ```
 
 The test suite drives every registered tool through a stubbed googleapis client and asserts that all 63 Drive v3 methods are reached, so a missing or misrouted tool fails the build.

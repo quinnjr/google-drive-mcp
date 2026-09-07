@@ -4,16 +4,6 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 /** Serialise a Google API response as a JSON tool result. */
 export function jsonResult(data: unknown): CallToolResult {
   const text = typeof data === "string" ? data : JSON.stringify(data ?? null, null, 2);
-  return { content: [{ type: "text", text }], structuredContent: asStructured(data) };
-}
-
-function asStructured(data: unknown): Record<string, unknown> | undefined {
-  if (data && typeof data === "object" && !Array.isArray(data)) return data as Record<string, unknown>;
-  if (data === undefined || data === null) return undefined;
-  return { result: data };
-}
-
-export function textResult(text: string): CallToolResult {
   return { content: [{ type: "text", text }] };
 }
 
@@ -21,21 +11,43 @@ export function errorResult(message: string): CallToolResult {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 
+/** Raised for caller mistakes and policy refusals; reported verbatim, without a Google API prefix. */
+export class ToolInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ToolInputError";
+  }
+}
+
+interface GaxiosLike {
+  message?: string;
+  code?: number | string;
+  status?: number;
+  response?: { status?: number; data?: unknown };
+}
+
+/** True when the failure carries a Google API HTTP response, rather than being a local error. */
+function isApiError(err: unknown): err is GaxiosLike {
+  if (!err || typeof err !== "object") return false;
+  const e = err as GaxiosLike;
+  if (e.response && typeof e.response === "object") return true;
+  return typeof e.status === "number" || typeof e.code === "number";
+}
+
 /** Turn a googleapis / gaxios failure into a readable, non-leaking message. */
 export function describeError(err: unknown): string {
-  const e = err as {
-    message?: string;
-    code?: number | string;
-    status?: number;
-    response?: { status?: number; data?: unknown };
-    errors?: unknown;
-  };
-  const status = e?.response?.status ?? e?.status ?? e?.code;
-  const data = e?.response?.data;
+  if (err instanceof ToolInputError) return err.message;
+  if (!isApiError(err)) {
+    return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+  }
+
+  const e = err;
+  const status = e.response?.status ?? e.status ?? e.code;
+  const data = e.response?.data;
   let detail = "";
   if (data !== undefined) {
-    const asObj = data as { error?: { message?: string; errors?: unknown; status?: string } };
-    if (asObj?.error?.message) {
+    const asObj = data as { error?: { message?: string; status?: string } | string };
+    if (typeof asObj?.error === "object" && asObj.error?.message) {
       detail = asObj.error.message;
       if (asObj.error.status) detail += ` (${asObj.error.status})`;
     } else if (typeof data === "string") {
@@ -44,9 +56,9 @@ export function describeError(err: unknown): string {
       detail = JSON.stringify(data).slice(0, 2000);
     }
   }
-  const base = e?.message ?? String(err);
-  const parts = [status !== undefined ? `Google Drive API error ${status}` : "Google Drive API error", detail || base];
-  return parts.filter(Boolean).join(": ");
+  const base = e.message ?? String(err);
+  const head = status !== undefined ? `Google Drive API error ${status}` : "Google Drive API error";
+  return [head, detail || base].filter(Boolean).join(": ");
 }
 
 /** Drop undefined/null keys so googleapis does not send empty query parameters. */
@@ -61,15 +73,6 @@ export function clean<T extends Record<string, unknown>>(params: T): Record<stri
 /* ------------------------------------------------------------------ */
 /* Reusable parameter fragments                                        */
 /* ------------------------------------------------------------------ */
-
-export const fieldsParam = {
-  fields: z
-    .string()
-    .optional()
-    .describe(
-      "Partial-response selector, e.g. 'id,name,mimeType' or 'files(id,name),nextPageToken'. Use '*' for every field. Defaults to the API default set.",
-    ),
-};
 
 export const sharedDriveParams = {
   supportsAllDrives: z
@@ -95,4 +98,18 @@ export function withDriveDefaults(params: Record<string, unknown>): Record<strin
   const out = { ...params };
   if (out.supportsAllDrives === undefined) out.supportsAllDrives = true;
   return out;
+}
+
+/** Applied to the corpus-spanning list/watch calls, which need both flags to agree. */
+export function withCorpusDefaults(params: Record<string, unknown>): Record<string, unknown> {
+  const out = withDriveDefaults(params);
+  if (out.includeItemsFromAllDrives === undefined) out.includeItemsFromAllDrives = true;
+  return out;
+}
+
+/** Parses a Drive `size` field, which the API returns as a decimal string. */
+export function parseSize(size: string | null | undefined): number | undefined {
+  if (!size) return undefined;
+  const n = Number(size);
+  return Number.isFinite(n) ? n : undefined;
 }
