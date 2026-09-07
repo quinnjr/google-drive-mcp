@@ -1,0 +1,40 @@
+{
+  "name": "google-drive-mcp",
+  "version": "1.0.0",
+  "description": "Model Context Protocol server exposing the full Google Drive v3 API over Streamable HTTP",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "google-drive-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    ".env.example"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsc -p tsconfig.json --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsc -p tsconfig.json && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "express": "^5.2.1",
+    "google-auth-library": "^10.5.0",
+    "googleapis": "^178.0.0",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  },
+  "packageManager": "pnpm@12.3.4"
+}
