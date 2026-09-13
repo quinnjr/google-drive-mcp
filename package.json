@@ -1,6 +1,6 @@
 {
   "name": "@quinnjr/google-drive-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Model Context Protocol server exposing the full Google Drive v3 API over Streamable HTTP",
   "license": "MIT",
   "type": "module",
@@ -47,5 +47,8 @@
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0"
   },
-  "packageManager": "pnpm@12.3.4"
+  "packageManager": "pnpm@12.3.4",
+  "optionalDependencies": {
+    "@napi-rs/keyring": "2.0.0"
+  }
 }
