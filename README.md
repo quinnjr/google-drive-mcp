@@ -41,11 +41,41 @@ Credentials are resolved in this order; configure exactly one.
 | Mode | Environment | Notes |
 | --- | --- | --- |
 | Per-request token | `GOOGLE_TOKEN_PASSTHROUGH=1` | Each client sends `X-Google-Access-Token: ya29...`; every call runs as that user. Falls back to the server's own credentials when the header is absent. |
-| OAuth2 user | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN` | Refreshes access tokens automatically. |
-| Service account | `GOOGLE_SERVICE_ACCOUNT_KEY_FILE` or `GOOGLE_SERVICE_ACCOUNT_KEY_JSON`, optionally `GOOGLE_IMPERSONATE_SUBJECT` | Set the subject to impersonate a Workspace user via domain-wide delegation. The key file may be named anything — extensionless mounted secrets work. The startup banner names the impersonated user, so you can see delegation is live. |
+| OAuth2 user | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`, `GOOGLE_ACCESS_TOKEN` | Refreshes access tokens automatically. Any of these may come from libsecret instead. |
+| Service account | `GOOGLE_SERVICE_ACCOUNT_KEY_FILE` or `GOOGLE_SERVICE_ACCOUNT_KEY_JSON`, optionally `GOOGLE_IMPERSONATE_SUBJECT` | Set the subject to impersonate a Workspace user via domain-wide delegation. The key file may be named anything — extensionless mounted secrets work. The startup banner names the impersonated user, so you can see delegation is live. The inline JSON may come from libsecret instead. |
 | ADC | none | Uses `gcloud auth application-default login` or the metadata server. |
 
 Default scopes are `drive` and `drive.appdata`. Narrow them with `GOOGLE_SCOPES` (comma-separated); note that `drive.file` restricts the server to files this app created.
+
+### Credentials in libsecret
+
+Any credential the environment leaves blank is looked up in the Secret Service (GNOME Keyring,
+KWallet, …) under the service name `google-drive-mcp`. This lets the server start with no Google
+secrets in its environment or on disk. The environment always wins per field, so a one-off override
+needs no keyring change, and the startup banner says which source was used. One exception: when the
+environment supplies a service-account key and no OAuth variable, that service account is used as-is
+and libsecret is not consulted.
+
+| Account | Fills |
+| --- | --- |
+| `oauth-client-id` | `GOOGLE_CLIENT_ID` |
+| `oauth-client-secret` | `GOOGLE_CLIENT_SECRET` |
+| `oauth-refresh-token` | `GOOGLE_REFRESH_TOKEN` |
+| `oauth-access-token` | `GOOGLE_ACCESS_TOKEN` |
+| `service-account-key` | `GOOGLE_SERVICE_ACCOUNT_KEY_JSON` (the full JSON) |
+
+Populate them with any Secret Service client, for example:
+
+```bash
+printf %s "$GOOGLE_REFRESH_TOKEN" | secret-tool store --label="google-drive-mcp" \
+  service google-drive-mcp username oauth-refresh-token
+```
+
+The lookup is best-effort and bounded by a timeout. If the native binding, the keyring, or a single
+entry is unavailable, the server falls back to the environment and ADC rather than failing to start.
+The binding ships as an optional dependency, so an install on an unsupported platform is not fatal.
+On Linux it tries the Secret Service first and falls back to the in-memory kernel keyring when none
+is available, so an entry stored there does not survive a reboot.
 
 ## Configuration
 

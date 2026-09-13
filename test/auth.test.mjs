@@ -65,6 +65,41 @@ test("an unreadable or malformed key file fails loudly", async () => {
   await assert.rejects(() => malformed.client(), /not valid JSON/);
 });
 
+test("describe() names libsecret when the environment supplied no oauth credentials", () => {
+  const provider = new AuthProvider(
+    configFrom({}, { clientId: "id", clientSecret: "secret", refreshToken: "rt" }),
+  );
+  assert.match(provider.describe(), /oauth2 \(libsecret credentials\)/);
+});
+
+test("describe() reports a mixed environment and libsecret source", () => {
+  const provider = new AuthProvider(
+    configFrom({ GOOGLE_CLIENT_ID: "env-id" }, { clientSecret: "secret", refreshToken: "rt" }),
+  );
+  assert.match(provider.describe(), /oauth2 \(env \+ libsecret credentials\)/);
+});
+
+test("describe() still names the environment when no libsecret entry is used", () => {
+  const provider = new AuthProvider(
+    configFrom({ GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "secret", GOOGLE_REFRESH_TOKEN: "rt" }),
+  );
+  assert.match(provider.describe(), /oauth2 \(env credentials\)/);
+});
+
+test("describe() marks a libsecret-sourced service account", () => {
+  const provider = new AuthProvider(
+    configFrom({}, { serviceAccountKey: '{"type":"service_account"}' }),
+  );
+  assert.match(provider.describe(), /service account \(inline JSON, libsecret\)/);
+});
+
+test("describe() leaves an environment inline-JSON service account unmarked", () => {
+  const provider = new AuthProvider(
+    configFrom({ GOOGLE_SERVICE_ACCOUNT_KEY_JSON: '{"type":"service_account"}' }),
+  );
+  assert.match(provider.describe(), /service account \(inline JSON\)/);
+});
+
 test("a failed credential build is not cached", async () => {
   const provider = new AuthProvider(
     configFrom({ GOOGLE_REFRESH_TOKEN: "rt" }), // missing client id/secret
