@@ -1,14 +1,14 @@
 #!/usr/bin/env node
 import { AuthProvider } from "./auth.js";
-import { loadConfig } from "./config.js";
+import { logLevelFromEnv, resolveConfig } from "./config.js";
 import { DriveFactory } from "./drive.js";
 import { createApp } from "./http.js";
 import { log, setLogLevel } from "./log.js";
 import { buildTools, SERVER_NAME, SERVER_VERSION } from "./server.js";
 
 async function main(): Promise<void> {
-  const config = loadConfig();
-  setLogLevel(config.logLevel);
+  setLogLevel(logLevelFromEnv());
+  const config = await resolveConfig();
 
   const auth = new AuthProvider(config);
   const factory = new DriveFactory(auth);

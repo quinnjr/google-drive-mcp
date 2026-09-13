@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { GoogleAuth, JWT, OAuth2Client } from "google-auth-library";
 import type { AuthClient } from "google-auth-library";
-import type { Config } from "./config.js";
+import type { Config, CredentialSource } from "./config.js";
 import { currentContext } from "./context.js";
 
 /**
@@ -10,6 +10,9 @@ import { currentContext } from "./context.js";
  *   2. an explicit OAuth2 refresh token / access token,
  *   3. an explicit service-account key (file or inline JSON),
  *   4. Application Default Credentials.
+ *
+ * The explicit values come from the environment or, when the environment left a field blank, from
+ * libsecret; see loadConfig.
  */
 function readKeyFile(path: string): string {
   try {
@@ -17,6 +20,22 @@ function readKeyFile(path: string): string {
   } catch (err) {
     throw new Error(`Cannot read service account key at ${path}: ${(err as Error).message}`);
   }
+}
+
+const SOURCE_TEXT: Record<CredentialSource, { oauth: string; suffix: string }> = {
+  none: { oauth: "env credentials", suffix: "" },
+  env: { oauth: "env credentials", suffix: "" },
+  libsecret: { oauth: "libsecret credentials", suffix: ", libsecret" },
+  "env+libsecret": { oauth: "env + libsecret credentials", suffix: ", env + libsecret" },
+};
+
+function oauthLabel(source: CredentialSource): string {
+  return SOURCE_TEXT[source].oauth;
+}
+
+/** Names libsecret only when it actually contributed, so an unchanged env setup reads as before. */
+function keyringSuffix(source: CredentialSource): string {
+  return SOURCE_TEXT[source].suffix;
 }
 
 export class AuthProvider {
@@ -31,9 +50,9 @@ export class AuthProvider {
   describe(): string {
     const c = this.#config;
     if (c.tokenPassthrough) return "per-request token (X-Google-Access-Token), falling back to server credentials";
-    if (c.oauth.refreshToken || c.oauth.accessToken) return "oauth2 (env credentials)";
+    if (c.oauth.refreshToken || c.oauth.accessToken) return `oauth2 (${oauthLabel(c.oauth.source)})`;
     if (c.serviceAccount.keyJson) {
-      return `service account (inline JSON)${c.serviceAccount.subject ? ` impersonating ${c.serviceAccount.subject}` : ""}`;
+      return `service account (inline JSON${keyringSuffix(c.serviceAccount.source)})${c.serviceAccount.subject ? ` impersonating ${c.serviceAccount.subject}` : ""}`;
     }
     if (c.serviceAccount.keyFile) {
       return c.serviceAccount.subject

@@ -1,4 +1,7 @@
-/** Runtime configuration, resolved once from the environment. */
+/** Runtime configuration, resolved from the environment and, optionally, libsecret. */
+
+import { credentialsFromKeyring, type KeyringCredentials } from "./keyring.js";
+import { log } from "./log.js";
 
 const TRUE = new Set(["1", "true", "yes", "on"]);
 const FALSE = new Set(["0", "false", "no", "off", ""]);
@@ -33,7 +36,8 @@ function list(name: string): string[] {
 const LOG_LEVELS = ["debug", "info", "warn", "error", "silent"] as const;
 export type LogLevel = (typeof LOG_LEVELS)[number];
 
-function logLevel(): LogLevel {
+/** Reads and validates LOG_LEVEL alone, so callers can configure logging before any other work. */
+export function logLevelFromEnv(): LogLevel {
   const raw = process.env.LOG_LEVEL?.trim().toLowerCase();
   if (!raw) return "info";
   if ((LOG_LEVELS as readonly string[]).includes(raw)) return raw as LogLevel;
@@ -44,6 +48,71 @@ export const DEFAULT_SCOPES = [
   "https://www.googleapis.com/auth/drive",
   "https://www.googleapis.com/auth/drive.appdata",
 ];
+
+/** Where a group of credentials was resolved from, for the startup banner. */
+export type CredentialSource = "none" | "env" | "libsecret" | "env+libsecret";
+
+interface ResolvedField {
+  value: string | undefined;
+  fromEnv: boolean;
+  fromKeyring: boolean;
+}
+
+/** The environment wins; libsecret only contributes a field the environment left blank. */
+function resolveField(envValue: string | undefined, keyringValue: string | undefined): ResolvedField {
+  return {
+    value: envValue || keyringValue || undefined,
+    fromEnv: Boolean(envValue),
+    fromKeyring: Boolean(keyringValue) && !envValue,
+  };
+}
+
+function sourceOf(fields: ResolvedField[]): CredentialSource {
+  const fromEnv = fields.some((field) => field.fromEnv);
+  const fromKeyring = fields.some((field) => field.fromKeyring);
+  if (fromEnv && fromKeyring) return "env+libsecret";
+  if (fromKeyring) return "libsecret";
+  if (fromEnv) return "env";
+  return "none";
+}
+
+function oauthEnvFromProcess(): Record<string, string | undefined> {
+  return {
+    clientId: process.env.GOOGLE_CLIENT_ID || undefined,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET || undefined,
+    refreshToken: process.env.GOOGLE_REFRESH_TOKEN || undefined,
+    accessToken: process.env.GOOGLE_ACCESS_TOKEN || undefined,
+  };
+}
+
+function serviceAccountEnvFromProcess(): Record<string, string | undefined> {
+  return {
+    keyJson: process.env.GOOGLE_SERVICE_ACCOUNT_KEY_JSON || undefined,
+    keyFile: process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE || process.env.GOOGLE_APPLICATION_CREDENTIALS || undefined,
+  };
+}
+
+/**
+ * Whether libsecret could still change the resolved credentials. A usable env credential wins
+ * anyway, and an env service account beats a libsecret key when no oauth credential is present.
+ * An access token stands alone; a refresh token needs its client id and secret to be usable.
+ */
+function needsKeyring(
+  oauthEnv: Record<string, string | undefined>,
+  serviceAccountEnv: Record<string, string | undefined>,
+): boolean {
+  const oauthFromEnv = Object.values(oauthEnv).some(Boolean);
+  const oauthComplete = oauthEnv.refreshToken
+    ? Boolean(oauthEnv.clientId && oauthEnv.clientSecret)
+    : Boolean(oauthEnv.accessToken);
+  const serviceAccountFromEnv = Boolean(serviceAccountEnv.keyJson || serviceAccountEnv.keyFile);
+  return !oauthComplete && !(serviceAccountFromEnv && !oauthFromEnv);
+}
+
+/** True when the environment alone cannot satisfy the credentials. */
+export function keyringNeeded(): boolean {
+  return needsKeyring(oauthEnvFromProcess(), serviceAccountEnvFromProcess());
+}
 
 export interface Config {
   host: string;
@@ -78,46 +147,113 @@ export interface Config {
     clientSecret: string | undefined;
     refreshToken: string | undefined;
     accessToken: string | undefined;
+    source: CredentialSource;
   };
   serviceAccount: {
     keyFile: string | undefined;
     keyJson: string | undefined;
     subject: string | undefined;
+    source: CredentialSource;
   };
   /** Max bytes returned inline as base64/text from download, export and resource reads. */
   maxInlineBytes: number;
   logLevel: LogLevel;
 }
 
-export function loadConfig(): Config {
-  const scopes = list("GOOGLE_SCOPES");
+/**
+ * Builds a Config from the environment plus the supplied libsecret credentials. Pure with respect
+ * to its arguments; resolveConfig wires in the actual keyring read.
+ */
+export function loadConfig(keyring: KeyringCredentials = {}): Config {
+  // Validate the plain environment first, so a misconfigured value aborts before any keyring work.
+  const host = process.env.HOST ?? "127.0.0.1";
+  const port = int("PORT", 3000, 0, 65535);
+  const mcpPath = process.env.MCP_PATH ?? "/mcp";
+  const authToken = process.env.MCP_AUTH_TOKEN || undefined;
+  const allowedHosts = list("MCP_ALLOWED_HOSTS");
+  const allowedOrigins = list("MCP_ALLOWED_ORIGINS");
+  const stateful = bool("MCP_STATEFUL", true);
+  const sessionTtlMs = int("MCP_SESSION_TTL_SECONDS", 1800, 30, 86400) * 1000;
+  const maxSessions = int("MCP_MAX_SESSIONS", 256, 1, 100000);
+  const maxRequestBytes = int("MCP_MAX_REQUEST_BYTES", 4 * 1024 * 1024, 1024, 512 * 1024 * 1024);
+  const tokenPassthrough = bool("GOOGLE_TOKEN_PASSTHROUGH", false);
+  const readOnly = bool("DRIVE_READ_ONLY", false);
+  const allowLocalFiles = bool("DRIVE_ALLOW_LOCAL_FILES", false);
+  const maxInlineBytes = int("DRIVE_MAX_INLINE_BYTES", 8 * 1024 * 1024, 1, 1024 * 1024 * 1024);
+  const level = logLevelFromEnv();
+  const scopesFromEnv = list("GOOGLE_SCOPES");
+
+  const oauthEnv = oauthEnvFromProcess();
+  const serviceAccountEnv = serviceAccountEnvFromProcess();
+
+  const clientId = resolveField(oauthEnv.clientId, keyring.clientId);
+  const clientSecret = resolveField(oauthEnv.clientSecret, keyring.clientSecret);
+  const refreshToken = resolveField(oauthEnv.refreshToken, keyring.refreshToken);
+  const accessToken = resolveField(oauthEnv.accessToken, keyring.accessToken);
+  const oauthSource = sourceOf([clientId, clientSecret, refreshToken, accessToken]);
+  if (oauthSource === "env+libsecret") {
+    log(
+      "warn",
+      "oauth credentials are split between the environment and libsecret; verify the client id, secret and token belong to the same OAuth client",
+    );
+  }
+
+  // An env key file must not be shadowed by a libsecret JSON key: AuthProvider prefers keyJson over
+  // keyFile, so only fall back to a libsecret key when the environment supplied neither.
+  const envHasServiceAccountKey = Boolean(serviceAccountEnv.keyJson || serviceAccountEnv.keyFile);
+  const keyJson = resolveField(
+    serviceAccountEnv.keyJson,
+    envHasServiceAccountKey ? undefined : keyring.serviceAccountKey,
+  );
+  const keyFile = resolveField(serviceAccountEnv.keyFile, undefined);
+
   return {
-    host: process.env.HOST ?? "127.0.0.1",
-    port: int("PORT", 3000, 0, 65535),
-    mcpPath: process.env.MCP_PATH ?? "/mcp",
-    authToken: process.env.MCP_AUTH_TOKEN || undefined,
-    allowedHosts: list("MCP_ALLOWED_HOSTS"),
-    allowedOrigins: list("MCP_ALLOWED_ORIGINS"),
-    stateful: bool("MCP_STATEFUL", true),
-    sessionTtlMs: int("MCP_SESSION_TTL_SECONDS", 1800, 30, 86400) * 1000,
-    maxSessions: int("MCP_MAX_SESSIONS", 256, 1, 100000),
-    maxRequestBytes: int("MCP_MAX_REQUEST_BYTES", 4 * 1024 * 1024, 1024, 512 * 1024 * 1024),
-    tokenPassthrough: bool("GOOGLE_TOKEN_PASSTHROUGH", false),
-    readOnly: bool("DRIVE_READ_ONLY", false),
-    allowLocalFiles: bool("DRIVE_ALLOW_LOCAL_FILES", false),
-    scopes: scopes.length ? scopes : DEFAULT_SCOPES,
+    host,
+    port,
+    mcpPath,
+    authToken,
+    allowedHosts,
+    allowedOrigins,
+    stateful,
+    sessionTtlMs,
+    maxSessions,
+    maxRequestBytes,
+    tokenPassthrough,
+    readOnly,
+    allowLocalFiles,
+    scopes: scopesFromEnv.length ? scopesFromEnv : DEFAULT_SCOPES,
     oauth: {
-      clientId: process.env.GOOGLE_CLIENT_ID || undefined,
-      clientSecret: process.env.GOOGLE_CLIENT_SECRET || undefined,
-      refreshToken: process.env.GOOGLE_REFRESH_TOKEN || undefined,
-      accessToken: process.env.GOOGLE_ACCESS_TOKEN || undefined,
+      clientId: clientId.value,
+      clientSecret: clientSecret.value,
+      refreshToken: refreshToken.value,
+      accessToken: accessToken.value,
+      source: oauthSource,
     },
     serviceAccount: {
-      keyFile: process.env.GOOGLE_SERVICE_ACCOUNT_KEY_FILE || process.env.GOOGLE_APPLICATION_CREDENTIALS || undefined,
-      keyJson: process.env.GOOGLE_SERVICE_ACCOUNT_KEY_JSON || undefined,
+      keyFile: keyFile.value,
+      keyJson: keyJson.value,
       subject: process.env.GOOGLE_IMPERSONATE_SUBJECT || undefined,
+      source: sourceOf([keyJson, keyFile]),
     },
-    maxInlineBytes: int("DRIVE_MAX_INLINE_BYTES", 8 * 1024 * 1024, 1, 1024 * 1024 * 1024),
-    logLevel: logLevel(),
+    maxInlineBytes,
+    logLevel: level,
   };
+}
+
+export interface CredentialDeps {
+  needed: () => boolean;
+  read: () => Promise<KeyringCredentials>;
+}
+
+const DEFAULT_CREDENTIAL_DEPS: CredentialDeps = { needed: keyringNeeded, read: credentialsFromKeyring };
+
+/**
+ * Resolves the full config, reading libsecret only when the environment cannot satisfy the
+ * credentials itself. Kept separate from loadConfig so the keyring I/O and the env-only merge can
+ * each be tested in isolation.
+ */
+export async function resolveConfig(deps: Partial<CredentialDeps> = {}): Promise<Config> {
+  const { needed, read } = { ...DEFAULT_CREDENTIAL_DEPS, ...deps };
+  const keyring = needed() ? await read() : {};
+  return loadConfig(keyring);
 }

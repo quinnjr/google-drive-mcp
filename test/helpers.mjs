@@ -19,13 +19,16 @@ const CONFIG_ENV = [
   "DRIVE_MAX_INLINE_BYTES", "LOG_LEVEL",
 ];
 
-/** Loads a Config from `env` alone, leaving process.env exactly as it found it. */
-export function configFrom(env = {}) {
+/**
+ * Loads a Config from `env` alone, leaving process.env exactly as it found it.
+ * `keyring` is injected empty by default so tests never read the developer's real keyring.
+ */
+export function configFrom(env = {}, keyring = {}) {
   const saved = new Map(CONFIG_ENV.map((k) => [k, process.env[k]]));
   try {
     for (const k of CONFIG_ENV) delete process.env[k];
     Object.assign(process.env, { LOG_LEVEL: "silent", ...env });
-    return loadConfig();
+    return loadConfig(keyring);
   } finally {
     for (const [k, v] of saved) {
       if (v === undefined) delete process.env[k];
